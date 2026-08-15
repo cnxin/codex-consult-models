@@ -1,0 +1,4 @@
+interface:
+  display_name: "Consult Models"
+  short_description: "Consult Claude, Grok, Gemini, and DeepSeek"
+  default_prompt: "Use $consult-models to ask external models for independent reviews, then synthesize their findings."
