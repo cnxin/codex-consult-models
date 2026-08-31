@@ -46,6 +46,15 @@ class CommandConstructionTests(unittest.TestCase):
         self.assertNotIn("-y", command)
         self.assertEqual(command[-1], "task")
 
+    def test_agy_uses_sandbox_without_permission_bypass(self) -> None:
+        with mock.patch.object(consult, "executable_for", return_value="/cli/agy"):
+            command = consult.command_for(
+                "agy", "task", "Gemini 3.7 Flash (High)"
+            )
+        self.assertIn("--sandbox", command)
+        self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertEqual(command[-2:], ["--model", "Gemini 3.7 Flash (High)"])
+
 
 class PromptTests(unittest.TestCase):
     def args_for(self, **overrides: object) -> Namespace:
@@ -88,6 +97,36 @@ class PromptTests(unittest.TestCase):
                 consult.load_prompt(args)
 
 
+class ProfileTests(unittest.TestCase):
+    def test_profile_round_trip_and_model_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir, "config.json")
+            config = consult.empty_config()
+            config["profiles"]["review"] = {
+                "providers": ["claude", "agy"],
+                "models": {"agy": "Gemini 3.7 Flash (High)"},
+            }
+            consult.write_config(config_path, config)
+            providers, models = consult.profile_settings(
+                "review", str(config_path), ["claude=sonnet"]
+            )
+        self.assertEqual(providers, ["claude", "agy"])
+        self.assertEqual(models["claude"], "sonnet")
+        self.assertEqual(models["agy"], "Gemini 3.7 Flash (High)")
+
+    def test_config_is_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir, "config.json")
+            consult.write_config(config_path, consult.empty_config())
+            mode = config_path.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_provider_selection_accepts_names_and_numbers(self) -> None:
+        self.assertEqual(
+            consult.parse_provider_selection("claude,4"), ["claude", "agy"]
+        )
+
+
 class ExecutionTests(unittest.TestCase):
     def test_grok_json_is_normalized(self) -> None:
         output, metadata = consult.normalize_cli_output(
@@ -104,6 +143,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(output, "answer")
         self.assertEqual(metadata["session_id"], "session-1")
         self.assertNotIn("thought", output)
+
+    def test_agy_json_is_normalized(self) -> None:
+        output, metadata = consult.normalize_cli_output(
+            "agy", json.dumps({"response": "answer", "usage": {"total_tokens": 3}})
+        )
+        self.assertEqual(output, "answer")
+        self.assertEqual(metadata["usage"]["total_tokens"], 3)
 
     def test_cli_runs_in_isolated_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -11,6 +11,7 @@ Read this file only for provider setup, authentication failures, model overrides
 | Claude | `claude` CLI | Claude CLI login | `claude -p ... --output-format json` |
 | Grok | `grok` CLI | `grok login --oauth` | `grok --output-format json --no-subagents --max-turns 1 -p ...` |
 | Gemini | `gemini` CLI | Gemini CLI login or its supported API key | `gemini -o json -p ...` |
+| Antigravity | `agy` CLI | Antigravity CLI login or supported Gemini API key | `agy -p ... --output-format json --sandbox` |
 | OpenCode | `opencode` CLI | Provider configured in OpenCode | `opencode run --format json ...` |
 | DeepSeek | No CLI required | `DEEPSEEK_API_KEY` | HTTPS request to the OpenAI-compatible chat completions endpoint |
 
@@ -34,7 +35,47 @@ python3 scripts/consult.py panel \
   --prompt "..."
 ```
 
-If no override is supplied, each CLI uses its configured default. DeepSeek uses `DEEPSEEK_MODEL` or `deepseek-chat`.
+If no override is supplied, each CLI uses its configured default. DeepSeek uses `DEEPSEEK_MODEL` or `deepseek-chat`. Antigravity accepts the display names or slugs returned by `agy models`, for example `Gemini 3.7 Flash (High)`.
+
+## Antigravity
+
+Install and authenticate the official Antigravity CLI before using the `agy`
+provider. On macOS and Linux, the official installer places `agy` in
+`~/.local/bin`; see [Antigravity Installation & Auth](https://antigravity.google/docs/cli/install/).
+Run an interactive `agy` session once if no cached account session exists.
+
+The adapter uses Google's supported headless JSON mode with `--sandbox`. It
+deliberately omits `--dangerously-skip-permissions`, so commands and other tools
+that require ungranted approval remain unavailable. Query account-visible model
+names with:
+
+```bash
+agy models
+```
+
+Then select one explicitly when needed:
+
+```bash
+python3 scripts/consult.py run \
+  --provider agy \
+  --model "Gemini 3.7 Flash (High)" \
+  --prompt "Review this design and identify the three highest risks."
+```
+
+## Task Profiles
+
+Task profiles save a reusable provider and model mix without storing credentials:
+
+```bash
+python3 scripts/consult.py configure --profile review
+python3 scripts/consult.py profiles
+python3 scripts/consult.py task --profile review --prompt "Review this diff."
+```
+
+Profiles live at `~/.config/codex-consult-models/config.json` with file mode
+`0600`. Set `CONSULT_MODELS_CONFIG` or pass `--config` to use a different path.
+An explicit `--model provider=MODEL` on `task` overrides the saved model for that
+run.
 
 ## DeepSeek
 
@@ -72,4 +113,6 @@ Never include proxy credentials in logs or model prompts.
 - OAuth or API timeout: test the provider endpoint through the configured proxy; do not disable TLS verification.
 - Non-zero CLI exit: inspect the returned `error` field. The script truncates stderr and does not include the prompt or environment.
 - Context rejected: reduce file size, convert binary data to a minimal textual description, or raise `--max-context-bytes` only after reviewing disclosure scope.
+- Antigravity authentication required: run `agy` interactively, complete login, then retry the provider.
+- Antigravity model not found: run `agy models` and pass an exact displayed name or slug with `--model`.
 - OpenCode model not found: configure the provider in OpenCode and pass its exact `provider/model` identifier with `--model`.

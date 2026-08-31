@@ -21,10 +21,13 @@ from pathlib import Path
 from typing import Any
 
 
-PROVIDERS = ("claude", "grok", "gemini", "opencode", "deepseek")
+PROVIDERS = ("claude", "grok", "gemini", "agy", "opencode", "deepseek")
 DEFAULT_CONTEXT_LIMIT = 256 * 1024
 MAX_CAPTURE_CHARS = 200_000
 MAX_ERROR_CHARS = 12_000
+CONFIG_ENV = "CONSULT_MODELS_CONFIG"
+DEFAULT_CONFIG_PATH = Path("~/.config/codex-consult-models/config.json")
+PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 READ_ONLY_PREAMBLE = """You are an external read-only consultant working for a Codex orchestrator.
 Do not call tools, execute commands, browse, spawn subagents, or modify files.
@@ -71,6 +74,198 @@ def provider_status(provider: str) -> dict[str, Any]:
         "available": path is not None,
         "path": path,
     }
+
+
+def resolve_config_path(path_text: str | None = None) -> Path:
+    selected = path_text or os.environ.get(CONFIG_ENV) or str(DEFAULT_CONFIG_PATH)
+    return Path(selected).expanduser().resolve()
+
+
+def empty_config() -> dict[str, Any]:
+    return {"version": 1, "profiles": {}}
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return empty_config()
+    if not path.is_file():
+        raise ConsultError(f"configuration path is not a file: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ConsultError(f"could not read configuration {path}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ConsultError("configuration must be a version 1 JSON object")
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ConsultError("configuration profiles must be an object")
+
+    normalized = empty_config()
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not PROFILE_NAME_PATTERN.fullmatch(name):
+            raise ConsultError(f"invalid profile name in configuration: {name!r}")
+        if not isinstance(profile, dict):
+            raise ConsultError(f"profile {name!r} must be an object")
+        providers = profile.get("providers")
+        models = profile.get("models", {})
+        if (
+            not isinstance(providers, list)
+            or not providers
+            or any(provider not in PROVIDERS for provider in providers)
+        ):
+            raise ConsultError(
+                f"profile {name!r} must contain one or more supported providers"
+            )
+        if (
+            not isinstance(models, dict)
+            or any(
+                provider not in PROVIDERS
+                or not isinstance(model, str)
+                or not model.strip()
+                for provider, model in models.items()
+            )
+        ):
+            raise ConsultError(f"profile {name!r} contains invalid model overrides")
+        unique_providers = list(dict.fromkeys(providers))
+        normalized["profiles"][name] = {
+            "providers": unique_providers,
+            "models": {
+                provider: models[provider].strip()
+                for provider in unique_providers
+                if provider in models
+            },
+        }
+    return normalized
+
+
+def write_config(path: Path, config: dict[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            json.dump(config, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            temp_path = Path(handle.name)
+        temp_path.chmod(0o600)
+        os.replace(temp_path, path)
+    except OSError as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise ConsultError(f"could not write configuration {path}: {exc}") from exc
+
+
+def profile_settings(
+    profile_name: str,
+    config_path_text: str | None,
+    model_overrides: list[str],
+) -> tuple[list[str], dict[str, str]]:
+    path = resolve_config_path(config_path_text)
+    config = load_config(path)
+    profile = config["profiles"].get(profile_name)
+    if profile is None:
+        raise ConsultError(
+            f"profile {profile_name!r} does not exist in {path}; run configure first"
+        )
+    models = dict(profile["models"])
+    models.update(parse_panel_models(model_overrides))
+    return list(profile["providers"]), models
+
+
+def parse_provider_selection(value: str) -> list[str]:
+    selected: list[str] = []
+    for raw_token in value.split(","):
+        token = raw_token.strip().lower()
+        if not token:
+            continue
+        if token.isdigit() and 1 <= int(token) <= len(PROVIDERS):
+            provider = PROVIDERS[int(token) - 1]
+        elif token in PROVIDERS:
+            provider = token
+        else:
+            raise ConsultError(
+                f"unknown provider selection {raw_token.strip()!r}; "
+                "use a provider name or displayed number"
+            )
+        if provider not in selected:
+            selected.append(provider)
+    if not selected:
+        raise ConsultError("select at least one provider")
+    return selected
+
+
+def configure_profile(profile_name: str | None, config_path_text: str | None) -> None:
+    if not sys.stdin.isatty():
+        raise ConsultError("configure requires an interactive terminal")
+    path = resolve_config_path(config_path_text)
+    config = load_config(path)
+
+    name = profile_name or input("Profile name (for example review or research): ").strip()
+    if not PROFILE_NAME_PATTERN.fullmatch(name):
+        raise ConsultError(
+            "profile name must start with a letter or number and contain only "
+            "letters, numbers, underscores, or hyphens"
+        )
+    existing = config["profiles"].get(name, {"providers": [], "models": {}})
+
+    print("\nChoose providers for this profile:")
+    statuses = {status["provider"]: status for status in map(provider_status, PROVIDERS)}
+    for index, provider in enumerate(PROVIDERS, start=1):
+        marker = "available" if statuses[provider]["available"] else "not configured"
+        selected_marker = " (selected)" if provider in existing["providers"] else ""
+        print(f"  {index}. {provider:<9} {marker}{selected_marker}")
+    default_selection = ",".join(existing["providers"])
+    selection_prompt = "Providers (comma-separated names or numbers)"
+    if default_selection:
+        selection_prompt += f" [{default_selection}]"
+    raw_selection = input(f"{selection_prompt}: ").strip() or default_selection
+    providers = parse_provider_selection(raw_selection)
+
+    print("\nSet an optional model for each provider.")
+    print("Press Enter to use that provider's configured default.")
+    models: dict[str, str] = {}
+    for provider in providers:
+        current = existing["models"].get(provider, "")
+        label = f"{provider} model"
+        if current:
+            label += f" [{current}]"
+        model = input(f"{label}: ").strip() or current
+        if model:
+            models[provider] = model
+
+    config["profiles"][name] = {"providers": providers, "models": models}
+    write_config(path, config)
+    print(f"\nSaved profile {name!r} to {path}")
+    print(f"Run it with: consult.py task --profile {name} --prompt \"...\"")
+
+
+def print_profiles(config_path_text: str | None, as_json: bool) -> None:
+    path = resolve_config_path(config_path_text)
+    config = load_config(path)
+    if as_json:
+        print(json.dumps({"path": str(path), **config}, ensure_ascii=False, indent=2))
+        return
+    if not config["profiles"]:
+        print(f"No profiles configured in {path}")
+        print("Create one with: consult.py configure")
+        return
+    print(f"Profiles in {path}:")
+    for name, profile in config["profiles"].items():
+        entries = [
+            f"{provider}={profile['models'][provider]}"
+            if provider in profile["models"]
+            else provider
+            for provider in profile["providers"]
+        ]
+        print(f"  {name}: {', '.join(entries)}")
 
 
 def read_text_file(path_text: str, label: str) -> str:
@@ -233,6 +428,19 @@ def command_for(provider: str, prompt: str, model: str | None) -> list[str]:
         command.extend(["-o", "json", "-p", prompt])
         return command
 
+    if provider == "agy":
+        command = [
+            executable,
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--sandbox",
+        ]
+        if model:
+            command.extend(["--model", model])
+        return command
+
     if provider == "opencode":
         command = [executable, "run"]
         if model:
@@ -265,6 +473,7 @@ def normalize_cli_output(provider: str, stdout: str) -> tuple[str, dict[str, Any
         "claude": ("result", "text", "response", "content"),
         "grok": ("text", "result", "response", "content"),
         "gemini": ("response", "text", "result", "content"),
+        "agy": ("response", "text", "result", "content"),
         "opencode": ("text", "result", "response", "content"),
     }.get(provider, ("text", "result", "response", "content"))
     output = ""
@@ -519,6 +728,32 @@ def print_results(results: list[dict[str, Any]], as_json: bool) -> None:
             print(f"ERROR: {result['error']}", file=sys.stderr)
 
 
+def run_many(
+    providers: list[str],
+    models: dict[str, str],
+    prompt: str,
+    timeout: int,
+    proxy: str,
+    max_workers: int,
+) -> list[dict[str, Any]]:
+    if max_workers < 1 or max_workers > 8:
+        raise ConsultError("--max-workers must be between 1 and 8")
+    workers = min(max_workers, len(providers))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            provider: executor.submit(
+                run_provider,
+                provider,
+                prompt,
+                models.get(provider),
+                timeout,
+                proxy,
+            )
+            for provider in providers
+        }
+        return [futures[provider].result() for provider in providers]
+
+
 def add_prompt_arguments(parser: argparse.ArgumentParser) -> None:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--prompt", help="Prompt text. Reads stdin when omitted.")
@@ -553,6 +788,18 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List provider availability.")
     list_parser.add_argument("--json", action="store_true", help="Emit structured JSON.")
 
+    configure_parser = subparsers.add_parser(
+        "configure", help="Create or edit an interactive task profile."
+    )
+    configure_parser.add_argument("--profile", help="Profile name to create or edit.")
+    configure_parser.add_argument("--config", help="Override the configuration file path.")
+
+    profiles_parser = subparsers.add_parser(
+        "profiles", help="List saved task profiles."
+    )
+    profiles_parser.add_argument("--config", help="Override the configuration file path.")
+    profiles_parser.add_argument("--json", action="store_true", help="Emit structured JSON.")
+
     run_parser = subparsers.add_parser("run", help="Consult one provider.")
     run_parser.add_argument("--provider", choices=PROVIDERS, required=True)
     run_parser.add_argument("--model", help="Provider-specific model override.")
@@ -567,6 +814,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     panel_parser.add_argument("--max-workers", type=int, default=4)
     add_prompt_arguments(panel_parser)
+
+    task_parser = subparsers.add_parser(
+        "task", help="Run a saved task profile with one or more providers."
+    )
+    task_parser.add_argument("--profile", required=True, help="Saved profile name.")
+    task_parser.add_argument("--config", help="Override the configuration file path.")
+    task_parser.add_argument(
+        "--model", action="append", default=[], help="Override as provider=model."
+    )
+    task_parser.add_argument("--max-workers", type=int, default=4)
+    add_prompt_arguments(task_parser)
     return parser
 
 
@@ -594,6 +852,14 @@ def main() -> int:
                     print(f"{status['provider']}: {marker} {detail}".rstrip())
             return 0
 
+        if args.command == "configure":
+            configure_profile(args.profile, args.config)
+            return 0
+
+        if args.command == "profiles":
+            print_profiles(args.config, args.json)
+            return 0
+
         validate_common_args(args)
         prompt = load_prompt(args)
 
@@ -604,26 +870,23 @@ def main() -> int:
             print_results([result], args.json)
             return 0 if result["ok"] else 1
 
-        providers = list(dict.fromkeys(args.provider))
-        if len(providers) < 2:
-            raise ConsultError("panel mode requires at least two distinct providers")
-        if args.max_workers < 1 or args.max_workers > 8:
-            raise ConsultError("--max-workers must be between 1 and 8")
-        models = parse_panel_models(args.model)
-        workers = min(args.max_workers, len(providers))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                provider: executor.submit(
-                    run_provider,
-                    provider,
-                    prompt,
-                    models.get(provider),
-                    args.timeout,
-                    args.proxy,
-                )
-                for provider in providers
-            }
-            results = [futures[provider].result() for provider in providers]
+        if args.command == "panel":
+            providers = list(dict.fromkeys(args.provider))
+            if len(providers) < 2:
+                raise ConsultError("panel mode requires at least two distinct providers")
+            models = parse_panel_models(args.model)
+        else:
+            providers, models = profile_settings(
+                args.profile, args.config, args.model
+            )
+        results = run_many(
+            providers,
+            models,
+            prompt,
+            args.timeout,
+            args.proxy,
+            args.max_workers,
+        )
         print_results(results, args.json)
         return 0 if all(result["ok"] for result in results) else 1
     except ConsultError as exc:

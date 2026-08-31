@@ -1,8 +1,9 @@
 # Consult Models for Codex
 
 `consult-models` is a personal Codex Skill for asking Claude, Grok, Gemini,
-DeepSeek, or OpenCode for independent read-only analysis. Codex stays in charge
-of repository inspection, verification, and every project file change.
+Antigravity, DeepSeek, or OpenCode for independent read-only analysis. Codex
+stays in charge of repository inspection, verification, and every project file
+change.
 
 The workflow is inspired by
 [`fengshao1227/ccg-workflow`](https://github.com/fengshao1227/ccg-workflow),
@@ -11,6 +12,8 @@ adapted for Codex Skills and conservative context disclosure.
 ## Highlights
 
 - Consult one provider or run a 2-4 model panel concurrently.
+- Use saved task profiles to choose provider and model combinations quickly.
+- Configure profiles through a lightweight interactive terminal panel.
 - Detect supported local CLIs and DeepSeek API credentials.
 - Start CLI providers in an empty temporary working directory.
 - Send only explicitly selected prompt and context files.
@@ -26,8 +29,12 @@ adapted for Codex Skills and conservative context disclosure.
 | Claude | Local CLI | `claude` installed and authenticated |
 | Grok | Local CLI | `grok` installed and authenticated |
 | Gemini | Local CLI | `gemini` installed and authenticated |
+| Antigravity | Local CLI | `agy` installed and authenticated |
 | OpenCode | Local CLI | `opencode` installed and configured |
 | DeepSeek | HTTPS API | `DEEPSEEK_API_KEY` environment variable |
+
+Antigravity uses Google's supported headless JSON mode with `--sandbox`. The
+adapter intentionally does not pass `--dangerously-skip-permissions`.
 
 ## Install
 
@@ -56,8 +63,9 @@ Use $consult-models to ask Grok for a second opinion on this API design.
 ```
 
 ```text
-Use $consult-models to ask Claude, Gemini, and DeepSeek to independently review
-the authorized diff, compare their findings, and then make your own assessment.
+Use $consult-models to ask Claude and Antigravity's Gemini 3.7 Flash to
+independently review the authorized diff, compare their findings, and then make
+your own assessment.
 ```
 
 Provider discovery can also be run directly:
@@ -66,8 +74,29 @@ Provider discovery can also be run directly:
 python3 skills/consult-models/scripts/consult.py list --json
 ```
 
+### Saved Task Profiles
+
+Create or edit a profile in the interactive terminal panel:
+
+```bash
+python3 skills/consult-models/scripts/consult.py configure --profile review
+```
+
+The panel selects providers and optional model overrides. Profiles contain no
+credentials and are saved to `~/.config/codex-consult-models/config.json` with
+file mode `0600`.
+
+```bash
+python3 skills/consult-models/scripts/consult.py profiles
+
+python3 skills/consult-models/scripts/consult.py task \
+  --profile review \
+  --prompt "Review this API design for correctness and security." \
+  --json
+```
+
 See [`skills/consult-models/references/providers.md`](skills/consult-models/references/providers.md)
-for provider setup, model overrides, proxy behavior, and troubleshooting.
+for provider setup, model overrides, profiles, proxy behavior, and troubleshooting.
 
 ## Safety Model
 

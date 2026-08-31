@@ -1,6 +1,6 @@
 ---
 name: consult-models
-description: Consult one or more external AI models from Codex through local CLIs or the DeepSeek API, then compare and synthesize their independent findings. Use when the user explicitly asks Codex to call, consult, compare, cross-review, or delegate read-only analysis to Claude, Grok, Gemini, DeepSeek, OpenCode, or multiple models. Do not trigger for ordinary Codex subagents or when sending project context to third parties has not been authorized.
+description: Consult one or more external AI models from Codex through local CLIs or the DeepSeek API, then compare and synthesize their independent findings. Use when the user explicitly asks Codex to call, consult, compare, cross-review, or delegate read-only analysis to Claude, Grok, Gemini, Antigravity, DeepSeek, OpenCode, or multiple models. Do not trigger for ordinary Codex subagents or when sending project context to third parties has not been authorized.
 ---
 
 # Consult Models
@@ -65,6 +65,29 @@ python3 "$SKILL_DIR/scripts/consult.py" panel \
 
 Use `--model provider=model` for provider-specific model overrides in panel mode. Keep panels to 2-4 providers unless the user asks for more.
 
+### Saved Task Profiles
+
+For recurring work, create or edit a profile in the interactive terminal panel:
+
+```bash
+python3 "$SKILL_DIR/scripts/consult.py" configure --profile review
+```
+
+The panel selects providers and optional provider-specific models, then saves
+them to `~/.config/codex-consult-models/config.json`. It never stores provider
+credentials. List and run profiles with:
+
+```bash
+python3 "$SKILL_DIR/scripts/consult.py" profiles
+python3 "$SKILL_DIR/scripts/consult.py" task \
+  --profile review \
+  --prompt "Review this design for correctness and security." \
+  --json
+```
+
+Use a task profile when the user names one or asks for their saved model mix.
+Explicit `--model provider=MODEL` values override that profile for one run.
+
 ### Prompt From Standard Input
 
 Prefer standard input when the prompt is long:
@@ -83,7 +106,7 @@ EOF
 - Use a panel for high-risk reviews, ambiguous architecture decisions, or when the user explicitly asks for comparison.
 - Use one provider for a narrow second opinion.
 - Do not claim a provider is inherently superior. Judge the returned evidence.
-- Read [references/providers.md](references/providers.md) when a provider is missing, authentication fails, a model override is needed, or DeepSeek/OpenCode is requested.
+- Read [references/providers.md](references/providers.md) when a provider is missing, authentication fails, a model override or task profile is needed, or Antigravity/DeepSeek/OpenCode is requested.
 
 ## Context Rules
 
