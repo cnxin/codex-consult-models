@@ -1,5 +1,7 @@
 # Consult Models
 
+English | [简体中文](README.zh-CN.md)
+
 `consult-models` is a Skill for Codex and Claude Code that asks other AI models
 for independent analysis (Codex, Claude, Grok, Antigravity/Gemini, DeepSeek,
 OpenCode) or hands them a bounded coding task. The orchestrating agent stays in
